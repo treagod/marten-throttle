@@ -20,7 +20,7 @@ module MartenThrottle
 
     property? enabled : Bool = true
     property default_policy : Policy? = nil
-    getter default_strategy : Symbol = :fixed_window
+    property default_strategy : StrategyName = Strategy::FixedWindow
     property? fail_open : Bool = true
     property cache_namespace : String = "throttle"
     property? trust_forwarded_headers : Bool = false
@@ -28,11 +28,6 @@ module MartenThrottle
     property skip_if : SkipPredicate? = nil
     property exclusions : Array(PathMatcher) = Array(PathMatcher).new
     property rules : Array(Rule) = Array(Rule).new
-
-    def default_strategy=(strategy : Symbol) : Symbol
-      Strategy.validate_name!(strategy)
-      @default_strategy = strategy
-    end
 
     def draw(&) : Nil
       with self yield self
@@ -43,7 +38,7 @@ module MartenThrottle
       matcher : Rule::Matcher,
       limit : Int32,
       per : Time::Span,
-      strategy : Symbol = default_strategy,
+      strategy : StrategyName = default_strategy,
       methods : Array(String)? = nil,
     ) : Rule
       r = Rule.new(matcher: matcher, limit: limit, window: per, strategy: strategy, methods: methods)

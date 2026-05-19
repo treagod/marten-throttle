@@ -4,8 +4,8 @@ Rate-limiting middleware for the [Marten](https://martenframework.com) web frame
 
 Two strategies are included:
 
-- `:fixed_window` performs one cache increment per request. Cheap, accurate to within a window boundary. The downside is that a client can spend its full budget at the end of one window and again at the start of the next, producing short bursts at the seam.
-- `:sliding_window` keeps two buckets (current and previous) and weights the previous count by how far into the new window the request falls. Smoother behavior, slightly more cache traffic.
+- `MartenThrottle::Strategy::FixedWindow` performs one cache increment per request. Cheap, accurate to within a window boundary. The downside is that a client can spend its full budget at the end of one window and again at the start of the next, producing short bursts at the seam.
+- `MartenThrottle::Strategy::SlidingWindow` keeps two buckets (current and previous) and weights the previous count by how far into the new window the request falls. Smoother behavior, slightly more cache traffic.
 
 ## Installation
 
@@ -47,7 +47,7 @@ Per-route rules go into a `draw` block. Rules are checked top to bottom, first m
 
 ```crystal
 Marten.settings.throttle.draw do
-  rule "/login", limit: 5, per: 1.minute, strategy: :sliding_window, methods: ["POST"]
+  rule "/login", limit: 5, per: 1.minute, strategy: MartenThrottle::Strategy::SlidingWindow, methods: ["POST"]
   rule "/api/*", limit: 30, per: 1.minute
   rule %r{^/admin}, limit: 10, per: 1.minute
 end
@@ -57,12 +57,12 @@ To throttle otherwise unmatched requests, configure `default_policy`:
 
 ```crystal
 Marten.settings.throttle.default_policy = MartenThrottle::Policy.new(limit: 100, per: 1.minute)
-Marten.settings.throttle.default_strategy = :fixed_window
+Marten.settings.throttle.default_strategy = MartenThrottle::Strategy::FixedWindow
 ```
 
-`default_strategy` is also the strategy used by rules that do not pass an explicit `strategy`.
+Rules without an explicit `strategy` use the current `default_strategy` when the rule is declared.
 
-When a request crosses its limit, the middleware short-circuits with a `429 Too Many Requests` response and sets `Retry-After` and `X-RateLimit-Limit` headers.
+When a request crosses its limit, the middleware short-circuits with a `429 Too Many Requests` response.
 
 ## The `rule` API
 
@@ -71,10 +71,27 @@ When a request crosses its limit, the middleware short-circuits with a `429 Too 
 - `matcher` is a `String` or `Regex`. Strings match exactly; a trailing `*` makes it a prefix match (`"/api/*"` covers `/api/users/1`, `/api/orders/3`, and so on).
 - `limit` is an `Int32` and must be greater than zero.
 - `per` is a `Time::Span`. Anything below one second is rejected.
-- `strategy` is `:fixed_window` or `:sliding_window`.
+- `strategy` is `MartenThrottle::Strategy::FixedWindow` or `MartenThrottle::Strategy::SlidingWindow`.
 - `methods`, if set, restricts the rule to those HTTP methods. Case-insensitive.
 
 A rule defines one bucket, not one bucket per concrete path. `/api/users/1` and `/api/users/42` share the same `/api/*` bucket. To count them separately, write separate rules or fold the path into the client identifier.
+
+## Response headers
+
+Requests that are checked by a throttle policy get rate-limit headers on both allowed and blocked responses:
+
+```text
+RateLimit-Limit
+RateLimit-Remaining
+RateLimit-Reset
+X-RateLimit-Limit
+X-RateLimit-Remaining
+X-RateLimit-Reset
+```
+
+`RateLimit-Reset` and `X-RateLimit-Reset` are expressed as seconds until reset, matching the `Retry-After` value. Blocked `429` responses also include `Retry-After`.
+
+Skipped, disabled, unmatched, and fail-open pass-through requests do not get rate-limit headers.
 
 ## Skipping requests
 
@@ -130,15 +147,15 @@ For sensitive endpoints where bypassing the throttle is worse than rejecting tra
 Marten.settings.throttle.fail_open = false
 ```
 
-With `fail_open = false`, cache exceptions propagate to the application.
+With `fail_open = false`, `MartenThrottle::CacheUnavailableError` propagates to the application.
 
 ## Cache key format
 
 ```
-{cache_namespace}:{r<rule_index>|d}:{client_id}
+{cache_namespace}:{r<rule_index>|d}:{sha256(client_id)}
 ```
 
-`r<rule_index>` is used when a per-route rule matched, `d` for the opt-in default policy. The strategy appends its own suffix on top.
+`r<rule_index>` is used when a per-route rule matched, `d` for the opt-in default policy. The client identifier is hashed before it is added to the key so emails, API keys, spaces, long IDs, and other raw values are not stored in cache keys. The strategy appends its own suffix on top.
 
 ## Not yet there
 
@@ -146,7 +163,6 @@ A few things that are planned but not implemented:
 
 - explicit trusted-proxy configuration and IP allowlists
 - a token-bucket strategy
-- the standard `RateLimit-*` headers alongside the `X-` ones
 - customizable 429 responses (templates or callable)
 - an opt-in log of blocked requests
 

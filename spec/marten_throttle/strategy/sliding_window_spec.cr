@@ -1,5 +1,11 @@
 require "../../spec_helper"
 
+private class SlidingWindowFailingReadCacheStore < Marten::Cache::Store::Memory
+  def read(key : String | Symbol, raw : Bool = false, version : Int32? = nil) : String?
+    raise IO::Error.new("cache unavailable")
+  end
+end
+
 describe MartenThrottle::SlidingWindow do
   describe "#check" do
     it "allows up to the limit within a window" do
@@ -59,6 +65,15 @@ describe MartenThrottle::SlidingWindow do
 
       expect_raises(ArgumentError, "Throttle window must be at least 1 second") do
         strategy.check("test:sw:invalid-window", limit: 1, window: 500.milliseconds)
+      end
+    end
+
+    it "wraps cache read failures" do
+      Marten.settings.cache_store = SlidingWindowFailingReadCacheStore.new
+      strategy = MartenThrottle::SlidingWindow.new
+
+      expect_raises(MartenThrottle::CacheUnavailableError, "Throttle cache unavailable") do
+        strategy.check("test:sw:cache-down", limit: 1, window: 1.minute)
       end
     end
   end

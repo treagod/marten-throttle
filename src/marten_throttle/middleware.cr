@@ -2,8 +2,8 @@ module MartenThrottle
   # Rate-limiting middleware.
   #
   # Skip requests first, pick the first rule whose matcher accepts the request, then fall back to
-  # an explicitly configured default policy. On rejection, returns 429 with `Retry-After` and
-  # `X-RateLimit-Limit` headers.
+  # an explicitly configured default policy. Throttled responses receive rate-limit headers; on
+  # rejection, returns 429 with `Retry-After`.
   class Middleware < Marten::Middleware
     GLOBAL_CLIENT = "global"
 
@@ -26,27 +26,48 @@ module MartenThrottle
 
       client = client_identifier(request, settings)
       scope = rule_idx ? "r#{rule_idx}" : "d"
-      key = "#{settings.cache_namespace}:#{scope}:#{client}"
+      key = cache_key(settings.cache_namespace, scope, client)
 
       result = begin
         Strategy.for(strategy_name).check(key, limit, window)
-      rescue ex
+      rescue ex : CacheUnavailableError
         raise ex unless settings.fail_open?
 
         Log.warn(exception: ex) { "Throttle cache unavailable; allowing request" }
         return get_response.call
       end
 
-      return get_response.call if result.allowed?
+      if result.allowed?
+        response = get_response.call
+        set_rate_limit_headers(response, result)
+        return response
+      end
 
       response = Marten::HTTP::Response.new(
         content: "Too many requests",
         content_type: "text/plain",
         status: 429,
       )
+      set_rate_limit_headers(response, result)
       response.headers["Retry-After"] = result.retry_after.to_s
-      response.headers["X-RateLimit-Limit"] = limit.to_s
       response
+    end
+
+    private def cache_key(namespace : String, scope : String, client : String) : String
+      client_digest = Digest::SHA256.hexdigest(client)
+      "#{namespace}:#{scope}:#{client_digest}"
+    end
+
+    private def set_rate_limit_headers(response : Marten::HTTP::Response, result : Result) : Nil
+      remaining = result.limit - result.count
+      remaining = 0 if remaining < 0
+
+      response.headers["RateLimit-Limit"] = result.limit.to_s
+      response.headers["RateLimit-Remaining"] = remaining.to_s
+      response.headers["RateLimit-Reset"] = result.retry_after.to_s
+      response.headers["X-RateLimit-Limit"] = result.limit.to_s
+      response.headers["X-RateLimit-Remaining"] = remaining.to_s
+      response.headers["X-RateLimit-Reset"] = result.retry_after.to_s
     end
 
     private def skipped?(request : Marten::HTTP::Request, settings) : Bool

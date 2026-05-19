@@ -1,3 +1,4 @@
+require "digest/sha256"
 require "marten"
 
 module MartenThrottle
@@ -5,6 +6,8 @@ module MartenThrottle
 end
 
 require "./marten_throttle/result"
+require "./marten_throttle/errors"
+require "./marten_throttle/strategy_name"
 require "./marten_throttle/strategy/base"
 require "./marten_throttle/strategy/fixed_window"
 require "./marten_throttle/strategy/sliding_window"

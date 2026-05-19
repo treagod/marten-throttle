@@ -23,8 +23,8 @@ module MartenThrottle
       prev_key = "#{key}:sw:#{prev_bucket}"
       curr_key = "#{key}:sw:#{curr_bucket}"
 
-      prev_count = (Marten.cache.read(prev_key).try(&.to_i?)) || 0
-      curr_count = Marten.cache.increment(curr_key, expires_in: window * 2).to_i
+      prev_count = (read_cache(prev_key).try(&.to_i?)) || 0
+      curr_count = increment_cache(curr_key, expires_in: window * 2).to_i
 
       weight = 1.0 - (offset.to_f / window_seconds.to_f)
       effective = (prev_count * weight) + curr_count

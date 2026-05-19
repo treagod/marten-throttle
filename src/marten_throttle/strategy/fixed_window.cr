@@ -11,7 +11,7 @@ module MartenThrottle
       bucket = now // window_seconds
       bucket_key = "#{key}:fw:#{bucket}"
 
-      count = Marten.cache.increment(bucket_key, expires_in: window).to_i
+      count = increment_cache(bucket_key, expires_in: window).to_i
 
       retry_after = window_seconds - (now % window_seconds)
       Result.new(allowed: count <= limit, count: count, limit: limit, retry_after: retry_after.to_i)

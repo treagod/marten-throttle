@@ -7,19 +7,18 @@ module MartenThrottle
     getter matcher : Matcher
     getter limit : Int32
     getter window : Time::Span
-    getter strategy : Symbol
+    getter strategy : StrategyName
     getter methods : Array(String)?
 
     def initialize(
       @matcher : Matcher,
       @limit : Int32,
       @window : Time::Span,
-      @strategy : Symbol = :fixed_window,
+      @strategy : StrategyName = Strategy::FixedWindow,
       methods : Array(String)? = nil,
     ) : Nil
       Settings.validate_limit!(@limit)
       Settings.validate_window!(@window)
-      Strategy.validate_name!(@strategy)
 
       @methods = methods.try(&.map(&.upcase))
       @path_matcher = PathMatcher.new(@matcher)

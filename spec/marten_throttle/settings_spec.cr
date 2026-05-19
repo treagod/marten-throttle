@@ -7,7 +7,7 @@ describe MartenThrottle::Settings do
 
       s.enabled?.should be_true
       s.default_policy.should be_nil
-      s.default_strategy.should eq(:fixed_window)
+      s.default_strategy.should eq(MartenThrottle::Strategy::FixedWindow)
       s.fail_open?.should be_true
       s.cache_namespace.should eq("throttle")
       s.client_identifier.should be_nil
@@ -17,20 +17,12 @@ describe MartenThrottle::Settings do
     end
   end
 
-  describe "#default_strategy=" do
-    it "rejects unknown strategies" do
-      expect_raises(ArgumentError, "Unknown throttle strategy: :unknown") do
-        Marten.settings.throttle.default_strategy = :unknown
-      end
-    end
-  end
-
   describe "#draw" do
     it "yields self so a block can declare exclusions and rules" do
       Marten.settings.throttle.draw do
         exclude("/health")
         rule("/login", limit: 5, per: 1.minute, methods: ["POST"])
-        rule("/api/*", limit: 30, per: 1.minute, strategy: :sliding_window)
+        rule("/api/*", limit: 30, per: 1.minute, strategy: MartenThrottle::Strategy::SlidingWindow)
       end
 
       s = Marten.settings.throttle
@@ -39,7 +31,7 @@ describe MartenThrottle::Settings do
       s.rules.size.should eq(2)
       s.rules[0].matcher.should eq("/login")
       s.rules[0].methods.should eq(["POST"])
-      s.rules[1].strategy.should eq(:sliding_window)
+      s.rules[1].strategy.should eq(MartenThrottle::Strategy::SlidingWindow)
     end
   end
 
@@ -59,12 +51,6 @@ describe MartenThrottle::Settings do
     it "rejects invalid rule windows" do
       expect_raises(ArgumentError, "Throttle window must be at least 1 second") do
         Marten.settings.throttle.rule("/x", limit: 1, per: 500.milliseconds)
-      end
-    end
-
-    it "rejects invalid rule strategies" do
-      expect_raises(ArgumentError, "Unknown throttle strategy: :unknown") do
-        Marten.settings.throttle.rule("/x", limit: 1, per: 1.minute, strategy: :unknown)
       end
     end
   end

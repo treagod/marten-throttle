@@ -15,7 +15,7 @@ Spec.before_each do
   Marten.cache.clear
   Marten.settings.throttle.enabled = true
   Marten.settings.throttle.default_policy = nil
-  Marten.settings.throttle.default_strategy = :fixed_window
+  Marten.settings.throttle.default_strategy = MartenThrottle::Strategy::FixedWindow
   Marten.settings.throttle.fail_open = true
   Marten.settings.throttle.cache_namespace = "throttle"
   Marten.settings.throttle.trust_forwarded_headers = false
