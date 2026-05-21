@@ -40,8 +40,16 @@ module MartenThrottle
       per : Time::Span,
       strategy : StrategyName = default_strategy,
       methods : Array(String)? = nil,
+      identifier : ClientIdentifier? = nil,
     ) : Rule
-      r = Rule.new(matcher: matcher, limit: limit, window: per, strategy: strategy, methods: methods)
+      r = Rule.new(
+        matcher: matcher,
+        limit: limit,
+        window: per,
+        strategy: strategy,
+        methods: methods,
+        identifier: identifier,
+      )
       @rules << r
       r
     end

@@ -44,4 +44,24 @@ describe MartenThrottle::Rule do
       rule.matches?(make_request(method: "POST", path: "/login")).should be_true
     end
   end
+
+  describe "#identifier" do
+    it "exposes the per-rule identifier proc when provided" do
+      proc = ->(request : Marten::HTTP::Request) : String { request.path }
+      rule = MartenThrottle::Rule.new(
+        matcher: "/x",
+        limit: 1,
+        window: 1.minute,
+        identifier: proc,
+      )
+
+      rule.identifier.should eq(proc)
+    end
+
+    it "defaults to nil" do
+      rule = MartenThrottle::Rule.new(matcher: "/x", limit: 1, window: 1.minute)
+
+      rule.identifier.should be_nil
+    end
+  end
 end

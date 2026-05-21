@@ -53,6 +53,13 @@ describe MartenThrottle::Settings do
         Marten.settings.throttle.rule("/x", limit: 1, per: 500.milliseconds)
       end
     end
+
+    it "stores a per-rule identifier when provided" do
+      proc = ->(request : Marten::HTTP::Request) : String { request.path }
+      Marten.settings.throttle.rule("/x", limit: 1, per: 1.minute, identifier: proc)
+
+      Marten.settings.throttle.rules.last.identifier.should eq(proc)
+    end
   end
 
   describe "#exclude" do

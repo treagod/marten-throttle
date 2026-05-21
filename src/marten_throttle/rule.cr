@@ -9,6 +9,7 @@ module MartenThrottle
     getter window : Time::Span
     getter strategy : StrategyName
     getter methods : Array(String)?
+    getter identifier : Settings::ClientIdentifier?
 
     def initialize(
       @matcher : Matcher,
@@ -16,6 +17,7 @@ module MartenThrottle
       @window : Time::Span,
       @strategy : StrategyName = Strategy::FixedWindow,
       methods : Array(String)? = nil,
+      @identifier : Settings::ClientIdentifier? = nil,
     ) : Nil
       Settings.validate_limit!(@limit)
       Settings.validate_window!(@window)

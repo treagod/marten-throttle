@@ -24,7 +24,7 @@ module MartenThrottle
       window = policy.window
       strategy_name = rule.try(&.strategy) || settings.default_strategy
 
-      client = client_identifier(request, settings)
+      client = client_identifier(request, settings, rule)
       scope = rule_idx ? "r#{rule_idx}" : "d"
       key = cache_key(settings.cache_namespace, scope, client)
 
@@ -89,7 +89,11 @@ module MartenThrottle
     # The "trust" toggle exists because Marten does not currently expose the peer connection
     # address: trusting these headers without a proxy in front lets clients trivially shard
     # themselves into separate buckets by sending arbitrary values.
-    private def client_identifier(request : Marten::HTTP::Request, settings) : String
+    private def client_identifier(request : Marten::HTTP::Request, settings, rule : Rule? = nil) : String
+      if rule_identifier = rule.try(&.identifier).try(&.call(request))
+        return normalize_identifier(rule_identifier)
+      end
+
       if identifier = settings.client_identifier.try(&.call(request))
         return normalize_identifier(identifier)
       end

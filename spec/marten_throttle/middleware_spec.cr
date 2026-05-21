@@ -139,6 +139,82 @@ describe MartenThrottle::Middleware do
       call(middleware, first).status.should eq(429)
     end
 
+    it "uses the per-rule identifier to keep buckets independent" do
+      Marten.settings.throttle.draw do
+        rule(
+          "/login",
+          limit: 1,
+          per: 1.minute,
+          identifier: ->(request : Marten::HTTP::Request) : String {
+            request.headers["X-Client"]? || "missing"
+          },
+        )
+      end
+      middleware = MartenThrottle::Middleware.new
+
+      first = make_request(path: "/login")
+      first.headers["X-Client"] = "client-a"
+      second = make_request(path: "/login")
+      second.headers["X-Client"] = "client-b"
+
+      call(middleware, first).status.should eq(200)
+      call(middleware, second).status.should eq(200)
+      call(middleware, first).status.should eq(429)
+    end
+
+    it "prefers the per-rule identifier over the global one when both are set" do
+      Marten.settings.throttle.client_identifier = ->(_request : Marten::HTTP::Request) : String {
+        raise "global identifier should not be called for rule-matched requests"
+      }
+      Marten.settings.throttle.draw do
+        rule(
+          "/login",
+          limit: 1,
+          per: 1.minute,
+          identifier: ->(request : Marten::HTTP::Request) : String {
+            request.headers["X-Client"]? || "missing"
+          },
+        )
+      end
+      middleware = MartenThrottle::Middleware.new
+
+      first = make_request(path: "/login")
+      first.headers["X-Client"] = "client-a"
+      second = make_request(path: "/login")
+      second.headers["X-Client"] = "client-b"
+
+      call(middleware, first).status.should eq(200)
+      call(middleware, second).status.should eq(200)
+      call(middleware, first).status.should eq(429)
+    end
+
+    it "falls back to the global identifier for requests that do not match a rule" do
+      Marten.settings.throttle.default_policy = MartenThrottle::Policy.new(limit: 1, per: 1.minute)
+      Marten.settings.throttle.client_identifier = ->(request : Marten::HTTP::Request) : String {
+        request.headers["X-Client"]? || "missing"
+      }
+      Marten.settings.throttle.draw do
+        rule(
+          "/login",
+          limit: 1,
+          per: 1.minute,
+          identifier: ->(_request : Marten::HTTP::Request) : String {
+            raise "per-rule identifier should not be called when the rule does not match"
+          },
+        )
+      end
+      middleware = MartenThrottle::Middleware.new
+
+      first = make_request(path: "/other")
+      first.headers["X-Client"] = "client-a"
+      second = make_request(path: "/other")
+      second.headers["X-Client"] = "client-b"
+
+      call(middleware, first).status.should eq(200)
+      call(middleware, second).status.should eq(200)
+      call(middleware, first).status.should eq(429)
+    end
+
     it "uses forwarded headers when explicitly trusted" do
       Marten.settings.throttle.default_policy = MartenThrottle::Policy.new(limit: 1, per: 1.minute)
       Marten.settings.throttle.trust_forwarded_headers = true

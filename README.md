@@ -66,13 +66,14 @@ When a request crosses its limit, the middleware short-circuits with a `429 Too 
 
 ## The `rule` API
 
-`rule(matcher, limit, per, strategy = default_strategy, methods = nil)`:
+`rule(matcher, limit, per, strategy = default_strategy, methods = nil, identifier = nil)`:
 
 - `matcher` is a `String` or `Regex`. Strings match exactly; a trailing `*` makes it a prefix match (`"/api/*"` covers `/api/users/1`, `/api/orders/3`, and so on).
 - `limit` is an `Int32` and must be greater than zero.
 - `per` is a `Time::Span`. Anything below one second is rejected.
 - `strategy` is `MartenThrottle::Strategy::FixedWindow` or `MartenThrottle::Strategy::SlidingWindow`.
 - `methods`, if set, restricts the rule to those HTTP methods. Case-insensitive.
+- `identifier`, if set, overrides the global `client_identifier` for this rule only. Useful when different routes need different keying — for example IP for `/login` and an API key for `/api/*`.
 
 A rule defines one bucket, not one bucket per concrete path. `/api/users/1` and `/api/users/42` share the same `/api/*` bucket. To count them separately, write separate rules or fold the path into the client identifier.
 
@@ -136,6 +137,23 @@ Marten.settings.throttle.trust_forwarded_headers = true
 ```
 
 Without that flag and without a custom identifier, every throttled request shares the `"global"` bucket per rule or default policy.
+
+Individual rules can override `client_identifier` with their own proc. Per-rule identifiers take precedence over the global one for matching requests; unmatched requests (handled by the default policy) keep using the global identifier.
+
+```crystal
+Marten.settings.throttle.draw do
+  rule "/login",
+    limit: 5,
+    per: 1.minute,
+    methods: ["POST"],
+    identifier: ->(request : Marten::HTTP::Request) { request.headers[:"X-Real-IP"]? || "global" }
+
+  rule "/api/*",
+    limit: 1000,
+    per: 1.minute,
+    identifier: ->(request : Marten::HTTP::Request) { request.headers["X-Api-Key"]? || "global" }
+end
+```
 
 ## Cache failures
 
