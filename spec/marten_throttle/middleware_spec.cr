@@ -109,7 +109,23 @@ describe MartenThrottle::Middleware do
       key.includes?(raw_client).should be_false
     end
 
+    it "uses a single global bucket when no client identifier is configured" do
+      store = MiddlewareRecordingCacheStore.new
+      Marten.settings.cache_store = store
+      Marten.settings.throttle.default_policy = MartenThrottle::Policy.new(limit: 1, per: 1.minute)
+      middleware = MartenThrottle::Middleware.new
+
+      call(middleware, make_request(path: "/a")).status.should eq(200)
+      # A different path/request still shares the same global bucket.
+      call(middleware, make_request(path: "/b")).status.should eq(429)
+
+      global_digest = Digest::SHA256.hexdigest(MartenThrottle::Middleware::GLOBAL_CLIENT)
+      store.increment_keys.all?(&.includes?("throttle:d:#{global_digest}:")).should be_true
+    end
+
     it "uses one global bucket by default even when forwarded headers are present" do
+      store = MiddlewareRecordingCacheStore.new
+      Marten.settings.cache_store = store
       Marten.settings.throttle.default_policy = MartenThrottle::Policy.new(limit: 1, per: 1.minute)
       middleware = MartenThrottle::Middleware.new
 
@@ -120,6 +136,12 @@ describe MartenThrottle::Middleware do
 
       call(middleware, first).status.should eq(200)
       call(middleware, second).status.should eq(429)
+
+      # Both requests land in the global bucket; the untrusted XFF values are not used.
+      global_digest = Digest::SHA256.hexdigest(MartenThrottle::Middleware::GLOBAL_CLIENT)
+      store.increment_keys.all?(&.includes?("throttle:d:#{global_digest}:")).should be_true
+      store.increment_keys.any?(&.includes?(Digest::SHA256.hexdigest("192.0.2.1"))).should be_false
+      store.increment_keys.any?(&.includes?(Digest::SHA256.hexdigest("192.0.2.2"))).should be_false
     end
 
     it "uses a configured client identifier to keep buckets independent" do
@@ -139,27 +161,30 @@ describe MartenThrottle::Middleware do
       call(middleware, first).status.should eq(429)
     end
 
-    it "uses the per-rule identifier to keep buckets independent" do
-      Marten.settings.throttle.draw do
-        rule(
-          "/login",
-          limit: 1,
-          per: 1.minute,
-          identifier: ->(request : Marten::HTTP::Request) : String {
-            request.headers["X-Client"]? || "missing"
-          },
-        )
-      end
+    it "falls back to the global bucket when an identifier resolves to empty or blank" do
+      store = MiddlewareRecordingCacheStore.new
+      Marten.settings.cache_store = store
+      Marten.settings.throttle.default_policy = MartenThrottle::Policy.new(limit: 100, per: 1.minute)
+      global_digest = Digest::SHA256.hexdigest(MartenThrottle::Middleware::GLOBAL_CLIENT)
       middleware = MartenThrottle::Middleware.new
 
-      first = make_request(path: "/login")
-      first.headers["X-Client"] = "client-a"
-      second = make_request(path: "/login")
-      second.headers["X-Client"] = "client-b"
+      # An empty client_identifier falls back to the global bucket.
+      Marten.settings.throttle.client_identifier = ->(_r : Marten::HTTP::Request) : String { "" }
+      call(middleware, make_request(path: "/empty")).status.should eq(200)
+      store.increment_keys.last.includes?("throttle:d:#{global_digest}:").should be_true
 
-      call(middleware, first).status.should eq(200)
-      call(middleware, second).status.should eq(200)
-      call(middleware, first).status.should eq(429)
+      # A whitespace-only client_identifier falls back too (normalize_identifier strips it).
+      Marten.settings.throttle.client_identifier = ->(_r : Marten::HTTP::Request) : String { "   " }
+      call(middleware, make_request(path: "/blank")).status.should eq(200)
+      store.increment_keys.last.includes?("throttle:d:#{global_digest}:").should be_true
+
+      # A blank X-Forwarded-For falls back even when forwarded headers are trusted.
+      Marten.settings.throttle.client_identifier = nil
+      Marten.settings.throttle.trust_forwarded_headers = true
+      blank_xff = make_request(path: "/blank-xff")
+      blank_xff.headers["X-Forwarded-For"] = "   "
+      call(middleware, blank_xff).status.should eq(200)
+      store.increment_keys.last.includes?("throttle:d:#{global_digest}:").should be_true
     end
 
     it "prefers the per-rule identifier over the global one when both are set" do
@@ -216,6 +241,8 @@ describe MartenThrottle::Middleware do
     end
 
     it "uses forwarded headers when explicitly trusted" do
+      store = MiddlewareRecordingCacheStore.new
+      Marten.settings.cache_store = store
       Marten.settings.throttle.default_policy = MartenThrottle::Policy.new(limit: 1, per: 1.minute)
       Marten.settings.throttle.trust_forwarded_headers = true
       middleware = MartenThrottle::Middleware.new
@@ -228,6 +255,9 @@ describe MartenThrottle::Middleware do
       call(middleware, first).status.should eq(200)
       call(middleware, second).status.should eq(200)
       call(middleware, first).status.should eq(429)
+
+      # The first forwarded hop is what keys the bucket.
+      store.increment_keys.first.includes?(Digest::SHA256.hexdigest("192.0.2.1")).should be_true
     end
 
     it "applies a route-specific rule when its matcher matches" do
@@ -253,7 +283,40 @@ describe MartenThrottle::Middleware do
       end
     end
 
-    it "skips requests when the skip predicate matches" do
+    it "applies the first matching rule and ignores later overlapping rules" do
+      Marten.settings.throttle.draw do
+        rule("/api", limit: 1, per: 1.minute)
+        rule("/api", limit: 100, per: 1.minute)
+      end
+      middleware = MartenThrottle::Middleware.new
+
+      call(middleware, make_request(path: "/api")).status.should eq(200)
+      response = call(middleware, make_request(path: "/api"))
+
+      # limit: 1 in the headers proves the first rule won, not the limit: 100 rule.
+      response.status.should eq(429)
+      expect_rate_limit_headers(response, limit: 1, remaining: 0)
+    end
+
+    it "applies the default policy only to requests that match no rule" do
+      Marten.settings.throttle.default_policy = MartenThrottle::Policy.new(limit: 1, per: 1.minute)
+      Marten.settings.throttle.draw do
+        rule("/login", limit: 5, per: 1.minute)
+      end
+      middleware = MartenThrottle::Middleware.new
+
+      # /login is governed by the rule (limit 5), not the default policy (limit 1).
+      5.times { call(middleware, make_request(path: "/login")).status.should eq(200) }
+      call(middleware, make_request(path: "/login")).status.should eq(429)
+
+      # /other matches no rule, so the default policy (limit 1) applies.
+      call(middleware, make_request(path: "/other")).status.should eq(200)
+      call(middleware, make_request(path: "/other")).status.should eq(429)
+    end
+
+    it "skips requests when the skip predicate matches, before any cache access" do
+      store = MiddlewareRecordingCacheStore.new
+      Marten.settings.cache_store = store
       Marten.settings.throttle.default_policy = MartenThrottle::Policy.new(limit: 1, per: 1.minute)
       Marten.settings.throttle.skip_if = ->(request : Marten::HTTP::Request) : Bool {
         request.path == "/health"
@@ -267,9 +330,12 @@ describe MartenThrottle::Middleware do
 
       response.status.should eq(200)
       expect_no_rate_limit_headers(response)
+      store.increment_keys.should be_empty
     end
 
-    it "skips requests when an exclusion matches" do
+    it "bypasses an excluded path before any cache access, even when a rule would match" do
+      store = MiddlewareRecordingCacheStore.new
+      Marten.settings.cache_store = store
       Marten.settings.throttle.default_policy = MartenThrottle::Policy.new(limit: 1, per: 1.minute)
       Marten.settings.throttle.draw do
         exclude("/assets/*")
@@ -279,17 +345,29 @@ describe MartenThrottle::Middleware do
 
       response = call(middleware, make_request(path: "/assets/app.css"))
 
+      # The exclusion wins over the competing rule and the cache is never touched.
       response.status.should eq(200)
       expect_no_rate_limit_headers(response)
+      store.increment_keys.should be_empty
     end
 
-    it "is a no-op when disabled" do
+    it "is a complete no-op when disabled" do
+      # A failing cache store would raise if the cache were touched at all.
+      Marten.settings.cache_store = MiddlewareFailingIncrementCacheStore.new
       Marten.settings.throttle.enabled = false
       Marten.settings.throttle.default_policy = MartenThrottle::Policy.new(limit: 1, per: 1.minute)
+      Marten.settings.throttle.skip_if = ->(_request : Marten::HTTP::Request) : Bool {
+        raise "skip predicate should not run when throttling is disabled"
+      }
+      Marten.settings.throttle.client_identifier = ->(_request : Marten::HTTP::Request) : String {
+        raise "client identifier should not run when throttling is disabled"
+      }
       middleware = MartenThrottle::Middleware.new
 
       10.times do
-        call(middleware, make_request(path: "/whatever")).status.should eq(200)
+        response = call(middleware, make_request(path: "/whatever"))
+        response.status.should eq(200)
+        expect_no_rate_limit_headers(response)
       end
     end
 
