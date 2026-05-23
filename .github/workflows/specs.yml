@@ -24,6 +24,10 @@ jobs:
       image: crystallang/crystal:${{ matrix.crystal }}
     steps:
       - uses: actions/checkout@v4
+      - name: Install required packages
+        run: |
+          apt-get update
+          apt-get -yqq install libsqlite3-dev
       - name: Install shards
         run: shards install --ignore-crystal-version
       - name: Cache Crystal
